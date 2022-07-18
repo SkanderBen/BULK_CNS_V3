@@ -1,1 +1,1 @@
-# BULK_CNS_V3
+# Bulk analysis of MS lesions
