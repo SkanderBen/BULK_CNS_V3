@@ -1,0 +1,710 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(edgeR)
+library(ggplot2)
+library(fgsea)
+library(qusage)
+library(DESeq2)
+library(enrichR)
+library(VennDiagram)
+library(ggpubr)
+library(ggrepel)
+library(PCAtools)
+library(RColorBrewer)
+library(rhandsontable)
+library(BiocManager)
+library(ggfortify)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(WGCNA)
+library(ggiraph)
+
+
+dat = read.csv('/Users/macbookpro/OneDrive/Documents/UDEM/Master/BulkData/data/merged_counts.apr2022.csv',row.names=1)
+meta = read.table('/Users/macbookpro/OneDrive/Documents/UDEM/Master/BulkData/data/meta_data.apr2022.csv',row.names=1,sep = ",")
+names(meta)[names(meta) == "type"] <- "lesion_type"
+meta$sex = 'M'
+meta[which(meta$sample=="AB203"),]$sex = 'F'
+meta$lesion_type <- gsub("Mixed","NAGM",meta$lesion_type)
+
+go = read.gmt('/Users/macbookpro/OneDrive/Documents/UDEM/Master/BulkData/GO/c5.go.bp.v7.5.1.symbols.gmt')
+fisher_enrichment<-function(cluster_markers,pathway,universe,pathway_name){
+enrichment_tables=list() 
+  for(cluster in 1:length(cluster_markers)){
+    cluster_name=names(cluster_markers)[cluster]
+    output <- lapply(pathway, function(x) {
+    freq.table <- table(factor(universe %in% as.character(cluster_markers[[cluster]]), 
+                          levels = c(TRUE,FALSE)), 
+                    	  factor(universe %in% x, 
+                          levels = c(TRUE,FALSE)))
+
+      fit <- fisher.test(freq.table, alternative = "greater")
+      interSection <- intersect(cluster_markers[[cluster]], x)
+      interSection <- paste(interSection, collapse = ",")
+      return(value = c(NOM_pval = fit$p.value, INTERSECT = interSection,"OR"=fit$estimate))})
+    
+    term_names=character()
+    for (pathway.term in 1:length(output)){
+      term_names[pathway.term]=pathway[[pathway.term]][1]
+    }
+  
+    results=data.frame(do.call("rbind",output))
+    results$fdr=p.adjust(as.numeric(as.character(results$NOM_pval)),method = "BH")
+    results=results[order(results$fdr),]
+    enrichment_tables[[cluster_name]]=results
+  }
+
+  return(enrichment_tables)
+}
+d0 <- DGEList(dat[-1])
+d0 <- calcNormFactors(d0)
+cutoff <- 2
+drop <- which(apply(cpm(d0), 1, max) < cutoff)
+d <- d0[-drop,]
+mm <- model.matrix(~ 0 + lesion_type+batch+sample, data=meta[colnames(d),])
+y <- voom(d[,rownames(meta)], mm, plot = F)
+
+BDCorr <- removeBatchEffect(y$E,batch = meta$batch, batch2 = meta$sample)
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, fig.width = 4, fig.height = 3}
+hc=hclust(dist(t(BDCorr),method = 'manhattan'),method='ward.D2')
+plot(hc)
+```
+## cluster 3
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, fig.width = 4, fig.height = 3}
+clus3=cutree(hc,k=3)
+meta$hc_clus3 = paste0('C',clus3[rownames(meta)])
+
+autoplot(prcomp(t(BDCorr)),data=meta,col='hc_clus3')
+
+t=table(meta[,c('lesion_type','hc_clus3')])
+for(i in 1:ncol(t)){t[,i]=t[,i]/sum(t[,i])}
+freq3 = data.frame(t)
+freq3Plot <- ggplot(freq3,aes(hc_clus3,Freq,fill=lesion_type))+geom_col(col='white')+theme_bw()
+freq3Plot
+```
+
+## cluster 4
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, fig.width = 4, fig.height = 3}
+clus4=cutree(hc,k=4)
+meta$hc_clus4 = paste0('C',clus4[rownames(meta)])
+
+autoplot(prcomp(t(BDCorr)),data=meta,col='hc_clus4')
+
+t=table(meta[,c('lesion_type','hc_clus4')])
+for(i in 1:ncol(t)){t[,i]=t[,i]/sum(t[,i])}
+freq4 = data.frame(t)
+freq4Plot <- ggplot(freq4,aes(hc_clus4,Freq,fill=lesion_type))+geom_col(col='white')+theme_bw()
+freq4Plot
+```
+
+## cluster 5
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, fig.width = 4, fig.height = 3}
+clus5=cutree(hc,k=5)
+meta$hc_clus5 = paste0('C',clus5[rownames(meta)])
+
+autoplot(prcomp(t(BDCorr)),data=meta,col='hc_clus5')
+
+t=table(meta[,c('lesion_type','hc_clus5')])
+for(i in 1:ncol(t)){t[,i]=t[,i]/sum(t[,i])}
+freq5 = data.frame(t)
+freq5Plot <- ggplot(freq5,aes(hc_clus5,Freq,fill=lesion_type))+geom_col(col='white')+theme_bw()
+freq5Plot
+```
+
+## cluster 3
+```{r echo=TRUE, fig.height=3, fig.width=4, message=FALSE, warning=FALSE, paged.print=TRUE}
+
+mm <- model.matrix(~ 0 + hc_clus3+lesion_type+batch+sample, data=meta[colnames(d),])
+y <-voom(d[,rownames(meta)], mm, plot = F)
+
+fit <- lmFit(y, mm)
+contr <- makeContrasts(
+  A = hc_clus3C1 - hc_clus3C2,
+  B = hc_clus3C1 - hc_clus3C3,
+  C = hc_clus3C2 - hc_clus3C3,
+  levels = colnames(coef(fit)))
+tmp <- contrasts.fit(fit, contr)
+tmp <- eBayes(tmp)
+
+resA <- topTable(tmp, sort.by = "P", n = Inf,coef='A')
+resB <- topTable(tmp, sort.by = "P", n = Inf,coef='B')
+resC <- topTable(tmp, sort.by = "P", n = Inf,coef='C')
+
+resA$gene_id =  rownames(resA)
+resA$comp = 'C1_vs_C2'
+resA$gene_name = ref_G[rownames(resA),3]
+resA=resA[order(-abs(resA$logFC)),]
+resA$show = F
+resA[1:10,'show']=T
+
+resB$gene_id =  rownames(resB)
+resB$comp = 'C1_vs_C3'
+resB$gene_name = ref_G[rownames(resB),3]
+resB=resB[order(-abs(resB$logFC)),]
+resB$show = F
+resB[1:10,'show']=T
+
+resC$gene_id =  rownames(resC)
+resC$comp = 'C2_vs_C3'
+resC$gene_name = ref_G[rownames(resC),3]
+resC=resC[order(-abs(resC$logFC)),]
+resC$show = F
+resC[1:10,'show']=T
+
+res=rbind(resA,resB,resC)
+res$sign = 'NS'
+res[which(res$adj.P.Val<0.05&res$logFC>1),'sign']='UP'
+res[which(res$adj.P.Val<0.05&res$logFC<(-1)),'sign']='DN'
+ggplot(res,aes(logFC,-log10(P.Value),col=sign))+geom_point(size=.1)+facet_grid(~comp)+theme_bw()+scale_color_manual(values=c('deepskyblue','grey80','tomato'))+geom_label_repel(data=subset(res,show),aes(label=gene_name),col='black',size=1.75,force=30,fill = alpha(c("white"),0.5))
+
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.width = 9, fig.height = 7.5}
+find_enrichments<-function(resA,n=5,show='both'){
+  resA.t = resA$t
+  names(resA.t)=resA$gene_name 
+  if(show=='up'){
+    resA.bp = subset(fgsea(go,resA.t,nperm=4000),NES>0)
+    resA.mf = subset(fgsea(mf,resA.t,nperm=4000),NES>0)
+    resA.kegg= subset(fgsea(kegg,resA.t,nperm=4000),NES>0)
+    resA.tft= subset(fgsea(tft,resA.t,nperm=4000),NES>0)
+  }else if(show=='down'){
+    resA.bp = subset(fgsea(go,resA.t,nperm=4000),NES<0)
+    resA.mf = subset(fgsea(mf,resA.t,nperm=4000),NES<0)
+    resA.kegg= subset(fgsea(kegg,resA.t,nperm=4000),NES<0)   
+    resA.tft= subset(fgsea(tft,resA.t,nperm=4000),NES<0)
+    
+  }else{
+    resA.bp = fgsea(go,resA.t,nperm=4000)
+    resA.mf = fgsea(mf,resA.t,nperm=4000)
+    resA.kegg= fgsea(kegg,resA.t,nperm=4000)   
+    resA.tft= subset(fgsea(tft,resA.t,nperm=4000))
+  }
+  
+  resA.bp$GO = 'BP'
+  resA.mf$GO = 'MF'
+  resA.kegg$GO = 'KEGG'
+  out=list(enr=list(bp=resA.bp,mf=resA.mf,kegg=resA.kegg,tft=resA.tft))
+  
+  enr = rbind(
+    head(resA.bp[order(resA.bp$padj),],n),
+    head(resA.mf[order(resA.mf$padj),],n),
+    head(resA.kegg[order(resA.kegg$padj),],n)
+  )
+  enr=data.frame(enr)
+  enr$pathway=gsub('_',' ',gsub('GO_|KEGG_','',enr$pathway))
+  enr$pathway=factor(enr$pathway,levels=as.character(enr[order(enr$GO,enr$NES),'pathway']))
+  p=ggplot(enr,aes(pathway,NES,fill=GO))+geom_col(width=.6,alpha=.6)+geom_col(width=.6,fill=NA,aes(col=GO))+coord_flip()+theme_bw()+geom_vline(xintercept=c(n,n*2)+.5,linetype='dashed')+geom_hline(yintercept=0)
+  out$plot=p
+  return(out)
+}
+
+
+enr.a=find_enrichments(resA)
+enr.b=find_enrichments(resB)
+enr.c=find_enrichments(resC)
+
+
+enrA = enr.a$enr$bp
+enrA=enrA[order(enrA$padj),]
+enrA$comp = unique(resA$comp)
+
+enrB = enr.b$enr$bp
+enrB=enrB[order(enrB$padj),]
+enrB$comp = unique(resB$comp)
+
+enrC = enr.c$enr$bp
+enrC=enrC[order(enrC$padj),]
+enrC$comp = unique(resC$comp)
+
+paths = c(head(enrA,10)$pathway,
+          head(enrB,10)$pathway,
+          head(enrC,10)$pathway)
+
+paths=unique(paths)
+rb=rbind(enrA[which(enrA$pathway%in%paths),c('pval','leadingEdge','NES','comp','pathway')],
+         enrB[which(enrB$pathway%in%paths),c('pval','leadingEdge','NES','comp','pathway')],
+         enrC[which(enrC$pathway%in%paths),c('pval','leadingEdge','NES','comp','pathway')])
+rb[which(rb$padj>=0.1),'NES']=NA
+rb$pathway <- gsub("GOBP", "",rb$pathway)
+rb$pathway <- gsub("_", " ",rb$pathway)
+ss  = strsplit(as.character(rb$leadingEdge),',')
+rb$n_genes = unlist(lapply(ss,length))
+rb$pval <- as.numeric(rb$pval)
+rb[which(rb$pval>=0.1),'pval']=NA
+
+
+ggplot(na.omit(rb),aes(pathway,comp,fill=NES))+geom_point(aes(size=pval),shape=21)+scale_x_discrete(label = function(x) stringr::str_trunc(x,50))+theme_bw()+coord_flip()+theme(axis.text.x=element_text( angle=60,hjust=1))+scale_fill_gradientn(colors=rev(brewer.pal(11,'RdYlBu')))+ scale_size(trans = 'reverse')+ theme(axis.text = element_text(face="bold"))
+
+```
+
+
+
+## WGCNA - Correlated Gene Modules
+
+```{r}
+counts <- counts[,rownames(meta)]
+dds <- DESeqDataSetFromMatrix(countData = na.omit(round(counts )),
+                              colData = meta[colnames(counts ),],
+                              design= ~ lesion_type+batch+sample)
+dds <- DESeq(dds)
+vsd <- varianceStabilizingTransformation(dds)
+library(genefilter) 
+wpn_vsd <- getVarianceStabilizedData(dds)
+rv_wpn <- rowVars(wpn_vsd)
+summary(rv_wpn)
+q75_wpn <- quantile( rowVars(wpn_vsd), .75)  # <= original
+q95_wpn <- quantile( rowVars(wpn_vsd), .95)  # <= changed to 95 quantile to reduce dataset
+expr_normalized <- wpn_vsd[ rv_wpn > q95_wpn, ]
+dim(expr_normalized)
+expr_normalized_df <- data.frame(expr_normalized) %>%
+  mutate(
+    Gene_id = row.names(expr_normalized)
+  ) %>%
+  pivot_longer(-Gene_id)
+
+expr_normalized_df %>% ggplot(., aes(x = name, y = value)) +
+  geom_violin() +
+  geom_point() +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text( angle = 90)
+  ) +
+  ylim(0, NA) +
+  labs(
+    title = "Normalized and 95 quantile Expression",
+    x = "treatment",
+    y = "normalized expression"
+  )
+input_mat = t(expr_normalized)
+
+input_mat[1:5,1:10]  
+
+library(WGCNA)
+
+# Choose a set of soft-thresholding powers
+powers = c(c(1:10), seq(from = 12, to = 20, by = 2))
+
+# Call the network topology analysis function
+sft = pickSoftThreshold(
+  input_mat,             # <= Input data
+  #blockSize = 30,
+  powerVector = powers,
+  verbose = 5
+  )
+
+par(mfrow = c(1,2));
+cex1 = 0.9;
+
+plot(sft$fitIndices[, 1],
+     -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     xlab = "Soft Threshold (power)",
+     ylab = "Scale Free Topology Model Fit, signed R^2",
+     main = paste("Scale independence")
+)
+text(sft$fitIndices[, 1],
+     -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     labels = powers, cex = cex1, col = "red"
+)
+abline(h = 0.90, col = "red")
+plot(sft$fitIndices[, 1],
+     sft$fitIndices[, 5],
+     xlab = "Soft Threshold (power)",
+     ylab = "Mean Connectivity",
+     type = "n",
+     main = paste("Mean connectivity")
+)
+text(sft$fitIndices[, 1],
+     sft$fitIndices[, 5],
+     labels = powers,
+     cex = cex1, col = "red")
+
+picked_power = 8
+temp_cor <- cor       
+cor <- WGCNA::cor         # Force it to use WGCNA cor function (fix a namespace conflict issue)
+#netwk <- blockwiseModules(input_mat,      
+#     maxBlockSize = 20895, 
+#     maxPOutliers = .1,
+#     corType='bicor',
+#     networkType = 'signed',
+#     power = 8, 
+#     numericLabels = TRUE,
+#     mergeCutHeight = 0.25,
+#     TOMType = "signed",
+#     corOptions = list(use = 'p'),
+#     verbose = 3,
+#     randomSeed = 1234)
+
+
+netwk <- readRDS('/Users/macbookpro/Library/CloudStorage/OneDrive-Personnel/Documents/UDEM/Master/BulkData/data/netwk.RDS')
+saveRDS(input_mat,'wgcna_results.rds')
+cor <- temp_cor
+# Convert labels to colors for plotting
+mergedColors = labels2colors(netwk$colors)
+# Plot the dendrogram and the module colors underneath
+plotDendroAndColors(
+  netwk$dendrograms[[1]],
+  mergedColors[netwk$blockGenes[[1]]],
+  "Module colors",
+  dendroLabels = FALSE,
+  hang = 0.03,
+  addGuide = TRUE,
+  guideHang = 0.05 )
+
+### Oli
+plotDendroAndColors(netwk$dendrograms[[1]], mergedColors[netwk$blockGenes[[1]]],
+                    "Module colors",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+```
+
+```{r}
+module_df <- data.frame(
+  gene_id = names(netwk$colors),
+  colors = labels2colors(netwk$colors)
+)
+
+MEs0 <- moduleEigengenes(input_mat, mergedColors)$eigengenes
+
+# Reorder modules so similar modules are next to each other
+MEs0 <- orderMEs(MEs0)
+module_order = names(MEs0) %>% gsub("ME","", .)
+
+# Add lesion_type
+MEs0$lesion_type = meta$lesion_type
+
+mME = MEs0 %>%
+  pivot_longer(-lesion_type) %>%
+  mutate(
+    name = gsub("ME", "", name),
+    name = factor(name, levels = module_order)
+  )
+
+mME %>% ggplot(., aes(x=lesion_type, y=name, fill=value)) +
+  geom_tile() +
+  theme_bw() +
+  scale_fill_gradient2(
+    low = "blue",
+    high = "red",
+    mid = "white",
+    midpoint = 0,
+    limit = c(-1,1)) +
+  theme(axis.text.x = element_text(angle=90)) +
+  labs(title = "Module-trait Relationships", y = "Modules", fill="corr")
+```
+
+```{r}
+  module_eigengenes <- netwk$MEs
+  pca = prcomp(module_eigengenes)
+  meta=meta[rownames(module_eigengenes),]
+  
+  p1=autoplot(pca,data=meta,col='batch')+theme_bw()+theme(legend.position='top')+scale_color_manual()
+  
+  p2=autoplot(pca,data=meta,col='lesion_type')+theme_bw()+theme(legend.position='top')
+  
+  p3=autoplot(pca,data=meta,col='sample')+theme_bw()+theme(legend.position='top')
+
+  
+  cowplot::plot_grid(p1,p2,p3,ncol=3)
+```
+
+
+
+```{r}
+fit <- lmFit(t(module_eigengenes), design = mm)
+contr <- makeContrasts(
+  A = lesion_typeWML - lesion_typeNAWM,
+  B = lesion_typeWML - lesion_typeCL,
+  C = lesion_typeCL - lesion_typeNAGM,
+  D = lesion_typeNAWM - lesion_typeNAGM,
+  E = lesion_typePVML - lesion_typeNAWM,
+  F = lesion_typePVML - lesion_typeWML,
+  G = lesion_typePVML - lesion_typeCL,
+  levels = colnames(coef(fit)))
+tmp <- contrasts.fit(fit, contr)
+tmp <- eBayes(tmp)
+
+resA <- topTable(tmp, sort.by = "P", n = Inf,coef='A')
+resB <- topTable(tmp, sort.by = "P", n = Inf,coef='B')
+resC <- topTable(tmp, sort.by = "P", n = Inf,coef='C')
+resD <- topTable(tmp, sort.by = "P", n = Inf,coef='D')
+resE <- topTable(tmp, sort.by = "P", n = Inf,coef='E')
+resF <- topTable(tmp, sort.by = "P", n = Inf,coef='F')
+resG <- topTable(tmp, sort.by = "P", n = Inf,coef='G')
+
+
+resA$comp = 'WML_vs_NAWM'
+resA$module = rownames(resA)
+resA=resA[order(-abs(resA$logFC)),]
+resA$show = F
+resA[1:15,'show']=T
+
+resB$comp = 'WML_vs_CL'
+resB$module = rownames(resB)
+resB=resB[order(-abs(resB$logFC)),]
+resB$show = F
+resB[1:15,'show']=T
+
+resC$comp = 'CL_vs_NAGM'
+resC$module = rownames(resC)
+resC=resC[order(-abs(resC$logFC)),]
+resC$show = F
+resC[1:15,'show']=T
+
+resD$comp = 'NAWM_vs_NAGM'
+resD$module = rownames(resD)
+resD=resD[order(-abs(resD$logFC)),]
+resD$show = F
+resD[1:15,'show']=T
+
+resE$comp = 'PVML_vs_NAWM'
+resE$module = rownames(resE)
+resE=resE[order(-abs(resE$logFC)),]
+resE$show = F
+resE[1:15,'show']=T
+
+resF$comp = 'PVML_vs_WML'
+resF$module = rownames(resF)
+resF=resF[order(-abs(resF$logFC)),]
+resF$show = F
+resF[1:15,'show']=T
+
+resG$comp = 'PVML_vs_CL'
+resG$module = rownames(resG)
+resG=resG[order(-abs(resG$logFC)),]
+resG$show = F
+resG[1:15,'show']=T
+
+res.mod=rbind(resA,resB,resC,resD,resE,resF,resG)
+res.mod$sign = 'NS'
+res.mod[which(res.mod$adj.P.Val<0.05&res.mod$logFC>0),'sign']='UP'
+res.mod[which(res.mod$adj.P.Val<0.05&res.mod$logFC<0),'sign']='DN'
+
+p=ggplot(na.omit(res.mod),aes(logFC,comp,col=sign))+
+    geom_point_interactive(aes(tooltip=module,data_id=module,size=abs(logFC)))+
+    theme_bw()+
+    scale_color_manual(values=sign_cols)+
+    scale_size(range=c(.1,5))
+girafe(ggobj=p,height_svg=3)
+
+```
+
+```{r}
+# pick out a few modules of interest here
+modules_of_interest = c("blue","green","brown","yellow","turquoise","black","grey","red" )
+
+# Pull out list of genes in that module
+submod = module_df %>%
+  subset(colors %in% modules_of_interest)
+
+row.names(module_df) = module_df$gene_id
+
+subexpr = expr_normalized[submod$gene_id,]
+
+submod_df = data.frame(subexpr) %>%
+  mutate(
+    gene_id = row.names(.)
+  ) %>%
+  pivot_longer(-gene_id) %>%
+  mutate(
+    module = module_df[gene_id,]$colors
+  )
+
+submod_df %>% ggplot(., aes(x=name, y=value, group=gene_id)) +
+  geom_line(aes(color = module),
+            alpha = 0.2) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90)
+  ) +
+  facet_grid(rows = vars(module)) +
+  labs(x = "sample",
+       y = "normalized expression")
+
+```
+
+```{r}
+# lmFit() needs a transposed version of the matrix
+fit <- limma::lmFit(t(module_eigengenes), design = mm)
+
+# Apply empirical Bayes to smooth standard errors
+fit <- limma::eBayes(fit)
+
+stats_df <- limma::topTable(fit, number = ncol(module_eigengenes)) %>%
+    tibble::rownames_to_column("module")
+
+module_1_df <- module_eigengenes %>%
+  tibble::rownames_to_column("id") %>%
+  # Here we are performing an inner join with a subset of metadata
+  dplyr::inner_join(meta %>%
+    dplyr::select(id, lesion_type),
+  by = c("id" = "id")
+  )
+
+comp1 <- module_eigengenes %>%
+  tibble::rownames_to_column("id") %>%
+  # Here we are performing an inner join with a subset of metadata
+  dplyr::inner_join(meta %>%
+    dplyr::select(id, lesion_type),
+  by = c("id" = "id")
+  )
+
+ggplot(
+  module_1_df,
+  aes(
+    x = lesion_type,
+    y = ME1,
+    color = lesion_type
+  )
+) +
+  # a boxplot with outlier points hidden (they will be in the sina plot)
+  geom_boxplot(width = 0.2, outlier.shape = NA) +
+  # A sina plot to show all of the individual data points
+  ggforce::geom_sina(maxwidth = 0.3) +
+  theme_classic()
+```
+
+```{r}
+gene_module_key <- tibble::enframe(netwk$colors, name = "gene", value = "module") %>%
+  # Let's add the `ME` part so its more clear what these numbers are and it matches elsewhere
+  dplyr::mutate(module = paste0("ME", module))
+
+gene_module_key %>%
+  dplyr::filter(module == "ME1")
+```
+
+```{r}
+module = list()
+univers = list()
+gene_module_key = data.frame(gene_module_key)
+for(mod in unique(gene_module_key[,2])){
+  geneIDs=subset(gene_module_key,module==mod)[,1]
+  gene_names=AnnotationDbi::select(org.Hs.eg.db,keys=geneIDs,keytype='ENSEMBL',columns=c('ENSEMBL','SYMBOL'))
+  univers <- append(univers, na.omit(gene_names$SYMBOL))
+  module[[mod]]=unique(na.omit(gene_names$SYMBOL))
+}
+
+fishr = fisher_enrichment(module,go,unique(univers))
+```
+
+```{r}
+  ME0 <- fishr$ME0
+  ME0$pathway <- rownames(ME0)
+  ME0$fdr <- as.numeric(ME0$fdr)
+  ME0$OR.odds.ratio <- as.numeric(ME0$OR.odds.ratio)
+  ME0$NOM_pval <- as.numeric(ME0$NOM_pval)
+  ME0 <- ME0[order(ME0$NOM_pval),]
+  ME0 <- head(ME0,10)
+  rownames(ME0) <- gsub("GOBP_", "",rownames(ME0)) 
+  rownames(ME0) <- gsub("_", " ",rownames(ME0)) 
+  
+  ME1 <- fishr$ME1
+  ME1$pathway <- rownames(ME1)
+  ME1$fdr <- as.numeric(ME1$fdr)
+  ME1$OR.odds.ratio <- as.numeric(ME1$OR.odds.ratio)
+  ME1$NOM_pval <- as.numeric(ME1$NOM_pval)
+  ME1 <- ME1[order(ME1$NOM_pval),]
+  ME1 <- head(ME1,10)
+  rownames(ME1) <- gsub("GOBP_", "",rownames(ME1)) 
+  rownames(ME1) <- gsub("_", " ",rownames(ME1)) 
+  
+  ME2 <- fishr$ME2
+  ME2$pathway <- rownames(ME2)
+  ME2$fdr <- as.numeric(ME2$fdr)
+  ME2$OR.odds.ratio <- as.numeric(ME2$OR.odds.ratio)
+  ME2$NOM_pval <- as.numeric(ME2$NOM_pval)
+  ME2 <- ME2[order(ME2$NOM_pval),]
+  ME2 <- head(ME2,10)
+  rownames(ME2) <- gsub("GOBP_", "",rownames(ME2)) 
+  rownames(ME2) <- gsub("_", " ",rownames(ME2)) 
+  
+  ME3 <- fishr$ME3
+  ME3$pathway <- rownames(ME3)
+  ME3$fdr <- as.numeric(ME3$fdr)
+  ME3$OR.odds.ratio <- as.numeric(ME3$OR.odds.ratio)
+  ME3$NOM_pval <- as.numeric(ME3$NOM_pval)
+  ME3 <- ME3[order(ME3$NOM_pval),]
+  ME3 <- head(ME3,10)
+  rownames(ME3) <- gsub("GOBP_", "",rownames(ME3)) 
+  rownames(ME3) <- gsub("_", " ",rownames(ME3)) 
+  
+  ME4 <- fishr$ME4
+  ME4$pathway <- rownames(ME4)
+  ME4$fdr <- as.numeric(ME4$fdr)
+  ME4$OR.odds.ratio <- as.numeric(ME4$OR.odds.ratio)
+  ME4$NOM_pval <- as.numeric(ME4$NOM_pval)
+  ME4 <- ME4[order(ME4$NOM_pval),]
+  ME4 <- head(ME4,10)
+  rownames(ME4) <- gsub("GOBP_", "",rownames(ME4)) 
+  rownames(ME4) <- gsub("_", " ",rownames(ME4)) 
+  
+  ME5 <- fishr$ME5
+  ME5$pathway <- rownames(ME5)
+  ME5$fdr <- as.numeric(ME5$fdr)
+  ME5$OR.odds.ratio <- as.numeric(ME5$OR.odds.ratio)
+  ME5$NOM_pval <- as.numeric(ME5$NOM_pval)
+  ME5 <- ME5[order(ME5$NOM_pval),]
+  ME5 <- head(ME5,10)
+  rownames(ME5) <- gsub("GOBP_", "",rownames(ME5)) 
+  rownames(ME5) <- gsub("_", " ",rownames(ME5)) 
+  
+  ME6 <- fishr$ME6
+  ME6$pathway <- rownames(ME6)
+  ME6$fdr <- as.numeric(ME6$fdr)
+  ME6$OR.odds.ratio <- as.numeric(ME6$OR.odds.ratio)
+  ME6$NOM_pval <- as.numeric(ME6$NOM_pval)
+  ME6 <- ME6[order(ME6$NOM_pval),]
+  ME6 <- head(ME6,10)
+  rownames(ME6) <- gsub("GOBP_", "",rownames(ME6)) 
+  rownames(ME6) <- gsub("_", " ",rownames(ME6)) 
+  
+  ME7 <- fishr$ME7
+  ME7$pathway <- rownames(ME7)
+  ME7$fdr <- as.numeric(ME7$fdr)
+  ME7$OR.odds.ratio <- as.numeric(ME7$OR.odds.ratio)
+  ME7$NOM_pval <- as.numeric(ME7$NOM_pval)
+  ME7 <- ME7[order(ME7$NOM_pval),]
+  ME7 <- head(ME7,10)
+  rownames(ME7) <- gsub("GOBP_", "",rownames(ME7)) 
+  rownames(ME7) <- gsub("_", " ",rownames(ME7)) 
+  
+  
+  
+  ME0P <- ggplot(ME0, aes(x=reorder(rownames(ME0),-rank(NOM_pval)), y=-log10(NOM_pval),fill=-log10(NOM_pval))) + geom_col(width=.65)+ scale_fill_gradient(low="#F6BDC0",high="#DC1C13") +theme(axis.text=element_text(size=7)) + scale_x_discrete(label = function(x) stringr::str_trunc(x,40)) + labs(title = "ME0") + xlab("") + coord_flip() + theme_bw()+ theme(axis.text = element_text(face="bold"))
+
+  ME1P <- ggplot(ME1, aes(x=reorder(rownames(ME1),-rank(NOM_pval)), y=-log10(NOM_pval),fill=-log10(NOM_pval))) + geom_col(width=.65)+ scale_fill_gradient(low="#F6BDC0",high="#DC1C13") +theme(axis.text=element_text(size=7)) + scale_x_discrete(label = function(x) stringr::str_trunc(x,40)) + labs(title = "ME1") + xlab("") + coord_flip() + theme_bw()+ theme(axis.text = element_text(face="bold"))
+  
+  ME2P <- ggplot(ME2, aes(x=reorder(rownames(ME2),-rank(NOM_pval)), y=-log10(NOM_pval),fill=-log10(NOM_pval))) + geom_col(width=.65)+ scale_fill_gradient(low="#F6BDC0",high="#DC1C13") +theme(axis.text=element_text(size=7)) + scale_x_discrete(label = function(x) stringr::str_trunc(x,40)) + labs(title = "ME2") + xlab("") + coord_flip() + theme_bw()+ theme(axis.text = element_text(face="bold"))
+  
+  ME3P <- ggplot(ME3, aes(x=reorder(rownames(ME3),-rank(NOM_pval)), y=-log10(NOM_pval),fill=-log10(NOM_pval))) + geom_col(width=.65)+ scale_fill_gradient(low="#F6BDC0",high="#DC1C13") +theme(axis.text=element_text(size=7)) + scale_x_discrete(label = function(x) stringr::str_trunc(x,40)) + labs(title = "ME3") + xlab("") + coord_flip() + theme_bw()+ theme(axis.text = element_text(face="bold"))
+  
+  ME4P <- ggplot(ME4, aes(x=reorder(rownames(ME4),-rank(NOM_pval)), y=-log10(NOM_pval),fill=-log10(NOM_pval))) + geom_col(width=.65)+ scale_fill_gradient(low="#F6BDC0",high="#DC1C13") +theme(axis.text=element_text(size=7)) + scale_x_discrete(label = function(x) stringr::str_trunc(x,40)) + labs(title = "ME4") + xlab("") + coord_flip() + theme_bw()+ theme(axis.text = element_text(face="bold"))
+  
+  ME5P <- ggplot(ME5, aes(x=reorder(rownames(ME5),-rank(NOM_pval)), y=-log10(NOM_pval),fill=-log10(NOM_pval))) + geom_col(width=.65)+ scale_fill_gradient(low="#F6BDC0",high="#DC1C13") +theme(axis.text=element_text(size=7)) + scale_x_discrete(label = function(x) stringr::str_trunc(x,40)) + labs(title = "ME5") + xlab("") + coord_flip() + theme_bw()+ theme(axis.text = element_text(face="bold"))
+  
+  ME6P <- ggplot(ME6, aes(x=reorder(rownames(ME6),-rank(NOM_pval)), y=-log10(NOM_pval),fill=-log10(NOM_pval))) + geom_col(width=.65)+ scale_fill_gradient(low="#F6BDC0",high="#DC1C13") +theme(axis.text=element_text(size=7)) + scale_x_discrete(label = function(x) stringr::str_trunc(x,40)) + labs(title = "ME6") + xlab("") + coord_flip() + theme_bw()+ theme(axis.text = element_text(face="bold"))
+  
+  ME7P <- ggplot(ME7, aes(x=reorder(rownames(ME7),-rank(NOM_pval)), y=-log10(NOM_pval),fill=-log10(NOM_pval))) + geom_col(width=.65)+ scale_fill_gradient(low="#F6BDC0",high="#DC1C13") +theme(axis.text=element_text(size=7)) + scale_x_discrete(label = function(x) stringr::str_trunc(x,40)) + labs(title = "ME7") + xlab("") + coord_flip() + theme_bw()+ theme(axis.text = element_text(face="bold"))
+  
+
+  
+  ggarrange(ME0P,ME1P,ME2P,ME3P,ME4P,ME5P,ME6P,ME7P,ncol = 3, nrow = 3,align = c("hv"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
